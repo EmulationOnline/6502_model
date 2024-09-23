@@ -9,6 +9,8 @@
 // - Tri state pins are represented by Option<bool>, and None indicates floating / HighZ.
 use std::collections::VecDeque;
 
+mod trace_tests;
+
 // Small internal instructions that perform the work for each
 // cycle of a user-facing instruction.
 #[derive(Clone, Copy, Debug)]
@@ -89,6 +91,16 @@ impl W6502 {
         }
     }
 
+    // Utility, lower and raise the clock for a given
+    // input.
+    pub fn cycle(&mut self, inputs: &Inputs) {
+        let mut inputs = inputs.clone();
+        inputs.clk = false;
+        self.tick(&inputs);
+        inputs.clk = true;
+        self.tick(&inputs);
+    }
+
     pub fn tick(&mut self, inputs: &Inputs) {
         let posedge =!self.prev_clk && inputs.clk; 
         let op = if posedge {
@@ -114,7 +126,6 @@ impl W6502 {
             return;
         }
 
-        println!("uop: {op:?}");
         // Execute uops.
         match op {
             UOp::Nop => {},
@@ -200,13 +211,13 @@ mod test {
         };
 
         for i in 0 .. RESET_CYCLES {
-            clock(&mut cpu, &inputs);
+            cpu.cycle(&inputs);
         }
 
         inputs.n_reset = true;
         // for the next 6 cycles, the cpu should be reading only.
         for i in 0 .. PRE_VECTOR_CYCLES {
-            clock(&mut cpu, &inputs);
+            cpu.cycle(&inputs);
             assert_eq!(true, cpu.outputs().rwb);
         }
 
