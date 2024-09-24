@@ -13,6 +13,10 @@ mod trace_tests;
 
 // Small internal instructions that perform the work for each
 // cycle of a user-facing instruction.
+//
+// Many instructions have very similar behavior. By examining the cpu
+// busses at each cycle, most instructions can be decomposed into a small
+// set of simple micro operations.
 #[derive(Clone, Copy, Debug)]
 enum UOp {
     Nop,
@@ -94,18 +98,20 @@ impl W6502 {
 
     // Utility, lower and raise the clock for a given
     // input.
-    pub fn cycle(&mut self, inputs: &Inputs) {
+    pub fn cycle(&mut self, inputs: &Inputs) -> Result<(), String> {
         let mut inputs = inputs.clone();
         inputs.clk = false;
-        self.tick(&inputs);
+        self.tick(&inputs)?;
         inputs.clk = true;
-        self.tick(&inputs);
+        self.tick(&inputs)?;
+        Ok(())
     }
 
-    pub fn tick(&mut self, inputs: &Inputs) {
+    pub fn tick(&mut self, inputs: &Inputs) -> Result<(), String> {
         let posedge =!self.prev_clk && inputs.clk; 
         let op = if posedge {
             if self.queue.len() > 0 {
+                self.outputs.data = None;
                 self.queue.pop_front().unwrap()
             } else {
                 UOp::Fetch
@@ -124,7 +130,7 @@ impl W6502 {
             }
             self.queue.push_back(UOp::ReadPC{first: true, addr: 0xFFFC});
             self.queue.push_back(UOp::ReadPC{first: false, addr: 0xFFFD});
-            return;
+            return Ok(());
         }
 
         // Execute uops.
@@ -157,6 +163,7 @@ impl W6502 {
         }
 
         self.prev_clk = inputs.clk;
+        Ok(())
     }
     pub fn outputs(&self) -> &Outputs {
         &self.outputs
@@ -168,7 +175,7 @@ impl W6502 {
     // This function is responsible for decoding the opcode byte,
     // and setting up the queue to execute the rest of the instruction.
     // After decoding, PC should point to the next instruction.
-    fn decode_op(&mut self, opcode: u8) {
+    fn decode_op(&mut self, opcode: u8) -> Result<(), String> {
         assert_eq!(0, self.queue.len());
         match opcode {
             0x4C => {
@@ -183,28 +190,23 @@ impl W6502 {
                 self.pc += 1;
             },
             _ => {
-                assert!(false, "Unsupported opcode: {opcode:2X}");
+                return Err(format!("Unsupported opcode: {opcode:2X}"));
             },
         }
+        Ok(())
     }
 
     fn set_addr(&mut self, value: u16) {
         self.outputs.address = value;
+    }
+    fn set_data(&mut self, value: u8) {
+        self.outputs.data = Some(value);
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-
-    fn clock(cpu: &mut W6502, inputs: &Inputs) {
-        let mut inputs = *inputs;
-        // toggle the clock low->high while asserting inputs.
-        inputs.clk = false;
-        cpu.tick(&inputs);
-        inputs.clk = true;
-        cpu.tick(&inputs);
-    }
 
     #[test]
     fn test_reset() {
@@ -242,17 +244,17 @@ mod test {
 
         // Then it should read the reset vector
         // Vector read 1
-        clock(&mut cpu, &inputs);
+        cpu.cycle(&inputs).unwrap();
         assert_eq!(0xFFFC, cpu.outputs().address);
         inputs.data = 0xAD;
 
         // Vector read 2
-        clock(&mut cpu, &inputs);
+        cpu.cycle(&inputs).unwrap();
         assert_eq!(0xFFFD, cpu.outputs().address);
         inputs.data = 0xDE;
 
         // start reading from target address
-        clock(&mut cpu, &inputs);
+        cpu.cycle(&inputs).unwrap();
         assert_eq!(0xDEAD, cpu.outputs().address);
     }
 }

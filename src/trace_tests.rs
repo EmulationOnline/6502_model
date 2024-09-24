@@ -72,11 +72,43 @@ fn parse_fields(input: &str) -> HashMap<String, u16> {
     result
 }
 
-fn assert_field(name: &str, want: u16, have: u16, line: usize) {
-    assert_eq!(
-        want, have,
-        "{name} mismatch on line {line}. Have={have:04X} Want={want:04X}");
+fn check_field(name: &str, want: u16, have: u16, line: usize) 
+    -> Result<(), String> {
+    if want != have {
+        Err(format!(
+        "{name} mismatch on line {line}. Have={have:04X} Want={want:04X}"))
+    } else {
+        Ok(())
+    }
 }
+
+#[derive(PartialEq, Debug)]
+enum TraceFailure {
+    BadSetup(String),
+    Incorrect(String),
+}
+impl TraceFailure {
+    fn is_badsetup(&self) -> bool {
+        match self {
+            TraceFailure::BadSetup(_) => true,
+            _ => false,
+        }
+    }
+}
+// Converts to a BadSetup by default, which is the most common case
+// and helps simplify run_trace_test.
+impl From<String> for TraceFailure {
+    fn from(input: String) -> Self {
+        TraceFailure::BadSetup(input)
+    }
+}
+impl From<&str> for TraceFailure {
+    fn from(input: &str) -> Self {
+        TraceFailure::BadSetup(input.to_string())
+    }
+}
+
+
 // Run the model in a given environment, and ensure the model's trace
 // matches the trace from the real chip.
 // All the following must be met:
@@ -86,20 +118,23 @@ fn assert_field(name: &str, want: u16, have: u16, line: usize) {
 // from the first reset read)
 fn run_trace_test(
     checker: &pki_util::trace::TraceChecker,
-    log_path: &str, input_path: &str) -> Result<(), String> {
+    log_path: &str, input_path: &str) -> Result<(), TraceFailure> {
     let log_data = std::fs::read_to_string(log_path)
-        .or(Err("Failed to read log file.".to_string()))?;
-    let log_data = checker.verify_trace(&log_data)?;
+        .or(Err("Failed to read log file."))?;
+    let log_data = checker.verify_trace(&log_data)
+        .or(Err("Verification failure"))?;
     let (kv, log_data) = get_trace_kv(log_data)?;
 
     let input_data : Vec<u8> = std::fs::read(input_path)
         .or(Err(format!("Failed to read input file: '{input_path}'")))?;
     let want_checksum = kv.get("InputSha256")
-        .ok_or("Input checksum missing from log.".to_string())?;
+        .ok_or("Input checksum missing from log.")?;
     validate_input(&input_data, want_checksum)?;
 
-    assert_model_log(&log_data, &input_data)?;
-    Ok(())
+    match assert_model_log(&log_data, &input_data) {
+        Ok(_) => Ok(()),
+        Err(e) => Err(TraceFailure::Incorrect(e)),
+    }
 }
 
 #[cfg(test)]
@@ -135,8 +170,8 @@ fn assert_model_log(log: &str, environment: &[u8])
         });
 
         // Every line should have a and rwb
-        assert_field("addr", fields["a"], cpu.outputs().address, num);
-        assert_field("rwb", fields["rwb"], cpu.outputs().rwb as u16, num);
+        check_field("addr", fields["a"], cpu.outputs().address, num)?;
+        check_field("rwb", fields["rwb"], cpu.outputs().rwb as u16, num)?;
 
 
         // d(ata) is optional
@@ -172,10 +207,14 @@ mod trace_tests {
     use super::*;
     use pki_util::trace::TraceChecker;
 
+    fn checker() -> TraceChecker {
+        TraceChecker::new(
+            &std::fs::read("chiplab_trace_signing.bin.pub").unwrap())
+    }
+
     #[test]
     fn test_nop_jmp() {
-        let checker = TraceChecker::new(
-            &std::fs::read("chiplab_trace_signing.bin.pub").unwrap());
+        let checker = checker();
         // this test just nops in a loop.
         assert_eq!(
             Ok(()),
@@ -183,4 +222,17 @@ mod trace_tests {
 
     }
 
+    #[test]
+    fn test_valid_but_incorrect() {
+        let checker = checker();
+        let result = run_trace_test(
+                &checker, 
+                "failing_traces/load_store_regs_basic.log",
+                "failing_traces/load_store_regs_basic.bin");
+        assert!(result.is_err());
+        let result = result.err().unwrap();
+        assert_eq!(
+            false,
+            result.is_badsetup());
+    }
 }
