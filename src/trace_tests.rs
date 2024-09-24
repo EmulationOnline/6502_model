@@ -82,7 +82,7 @@ fn check_field(name: &str, want: u16, have: u16, line: usize)
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Debug, Clone)]
 enum TraceFailure {
     BadSetup(String),
     Incorrect(String),
@@ -109,6 +109,7 @@ impl From<&str> for TraceFailure {
 }
 
 
+type TestResult = Result<(), TraceFailure>;
 // Run the model in a given environment, and ensure the model's trace
 // matches the trace from the real chip.
 // All the following must be met:
@@ -118,7 +119,7 @@ impl From<&str> for TraceFailure {
 // from the first reset read)
 fn run_trace_test(
     checker: &pki_util::trace::TraceChecker,
-    log_path: &str, input_path: &str) -> Result<(), TraceFailure> {
+    log_path: &str, input_path: &str) -> TestResult {
     let log_data = std::fs::read_to_string(log_path)
         .or(Err("Failed to read log file."))?;
     let log_data = checker.verify_trace(&log_data)
@@ -212,6 +213,30 @@ mod trace_tests {
             &std::fs::read("chiplab_trace_signing.bin.pub").unwrap())
     }
 
+    // Assert some function of the result for all tests in a directory.
+    fn assert_all_traces(directory: &str, expected_result: fn(TestResult)->bool) {
+        let checker = checker();
+        let mut count = 0;
+        for entry in std::fs::read_dir(directory).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let path = (*path).to_str().unwrap();
+            if !path.ends_with(".log") {
+                continue;
+            }
+            count += 1;
+
+            let input_path = format!("{}.bin", path.strip_suffix(".log").unwrap());
+            let result = run_trace_test(&checker, path, &input_path);
+            assert!(expected_result(result.clone()),
+                "Failure for test: '{path}' : {result:?}");
+        }
+
+        assert!(count > 0);
+        
+    }
+
+
     #[test]
     fn test_nop_jmp() {
         let checker = checker();
@@ -219,7 +244,6 @@ mod trace_tests {
         assert_eq!(
             Ok(()),
             run_trace_test(&checker, "passing_traces/nop_jmp_loop.log", "passing_traces/nop_jmp_loop.bin"));
-
     }
 
     #[test]
@@ -234,5 +258,19 @@ mod trace_tests {
         assert_eq!(
             false,
             result.is_badsetup());
+    }
+
+    #[test]
+    fn test_passing_traces() {
+        assert_all_traces("passing_traces/", |result| result.is_ok());
+    }
+
+    #[test]
+    fn test_failing_traces() {
+        // Failing traces should be valid besides having an incorrect
+        // result.
+        assert_all_traces("failing_traces/", |result| {
+            result.is_err() && !result.err().unwrap().is_badsetup()
+        });
     }
 }
