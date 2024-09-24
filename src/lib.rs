@@ -17,7 +17,8 @@ mod trace_tests;
 enum UOp {
     Nop,
     Fetch,
-    Reset(/*first byte*/bool),
+    ResetRegs,
+    ReadPC{first: bool, addr: u16},
 }
 
 struct W6502 {
@@ -121,14 +122,17 @@ impl W6502 {
             for i in 0 .. 6 {
                 self.queue.push_back(UOp::Nop);
             }
-            self.queue.push_back(UOp::Reset(true));
-            self.queue.push_back(UOp::Reset(false));
+            self.queue.push_back(UOp::ReadPC{first: true, addr: 0xFFFC});
+            self.queue.push_back(UOp::ReadPC{first: false, addr: 0xFFFD});
             return;
         }
 
         // Execute uops.
         match op {
-            UOp::Nop => {},
+            UOp::Nop => {
+                // nop reads past the opcode while stalling.
+                self.set_addr(self.pc);
+            },
             UOp::Fetch => {
                 if posedge {
                     self.set_addr(self.pc);
@@ -136,18 +140,15 @@ impl W6502 {
                     self.decode_op(inputs.data);
                 }
             },
-            UOp::Reset(first) => {
-                let src = if first {
-                    0xFFFC
-                } else {
-                    0xFFFD
-                };
+            UOp::ResetRegs => {
+                // TODO: initialize registers for reset
+            },
+            UOp::ReadPC{first, addr} => {
                 if posedge {
-                    self.set_addr(src);
+                    self.set_addr(addr);
                 } else {
                     if first {
                         self.pc = (self.pc & 0xFF00) | (inputs.data as u16);
-                        // TODO: initialize registers
                     } else {
                         self.pc = (self.pc & 0x00FF) | ((inputs.data as u16) << 8);
                     }
@@ -166,7 +167,25 @@ impl W6502 {
     //
     // This function is responsible for decoding the opcode byte,
     // and setting up the queue to execute the rest of the instruction.
-    fn decode_op(&mut self, value: u8) {
+    // After decoding, PC should point to the next instruction.
+    fn decode_op(&mut self, opcode: u8) {
+        assert_eq!(0, self.queue.len());
+        match opcode {
+            0x4C => {
+                // jmp abs
+                self.queue.push_back(UOp::ReadPC{first: true, addr: self.pc+1});
+                self.queue.push_back(UOp::ReadPC{first: false, addr: self.pc+2});
+                self.pc += 3;
+            },
+            0xEA => {
+                self.queue.push_back(UOp::Nop);
+                // nop
+                self.pc += 1;
+            },
+            _ => {
+                assert!(false, "Unsupported opcode: {opcode:2X}");
+            },
+        }
     }
 
     fn set_addr(&mut self, value: u16) {
