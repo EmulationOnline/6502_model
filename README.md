@@ -15,6 +15,8 @@ Contributions welcome! If you would like to improve the model, a good workflow i
 4. Add the trace to this repo as a test case, which should fail.
 5. Implement the desired functionality.
 
+For an example of adding an instruction, [Nop and Jump](https://github.com/EmulationOnline/6502_model/commit/4f3b7fe5e87a05f72396e278232fd875bc06fc8f) are a simple example, while [basic loads and stores](https://github.com/EmulationOnline/6502_model/commit/4f3b7fe5e87a05f72396e278232fd875bc06fc8f) needed adding some more flexible uops and was thus more involved.
+
 ## Roadmap / Currently implemented
 The list below gives an idea of what is currently supported. 
 Unchecked boxes are planned but not yet complete.
