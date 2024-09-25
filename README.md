@@ -4,6 +4,9 @@ This is a cycle accurate model of the 65C02 chip. This model is
 produced with the support of the ChipLab, which provides cycle-by-cycle
 traces of all external busses while executing programs on a real chip.
 
+The 6502 chiplab, used for collecting traces of gennuine chip execution, is available at:
+https://chiplab.emulationonline.com/6502/
+
 ## Contributing
 Contributions welcome! If you would like to improve the model, a good workflow is
 1. Find something that isn't working. See the roadmap or join our Discord.
