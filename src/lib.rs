@@ -23,6 +23,31 @@ enum UOp {
     Fetch,
     ResetRegs,
     ReadPC{first: bool, addr: u16},
+    Read{src: Source, reg: Register},
+    Write{dst: Source, val: Register},
+}
+#[derive(Clone, Copy, Debug)]
+enum Register {
+    Acc,
+    X,
+    Y,
+    // Fake scratch registers, used as work space for
+    // uops.
+    Scratch1,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Source {
+    // A direct address, known at the time of decoding the address.
+    Address(u16),
+    // RegVal allows uops to use the register value at the time of 
+    // usage, rather than when the opcode was initially decoded.
+    // Consider a zero page instruction:
+    // 1. read the operand, which holds a zero page address(u8)
+    // 2. read memory based on the value read previously.
+    // Step 2 would like to be able to use the result of #1. By reading 1
+    // into a register, step 2 can use Source::RegVal as its input to use that value.
+    RegVal(Register),
 }
 
 struct W6502 {
@@ -51,6 +76,8 @@ struct W6502 {
     y: u8,
     sp: u8,       // The top of stack is 0x0100 + sp
     flags: u8,    // NZCIDV
+    // scratch registers for uops
+    scratch1: u8,
 }
 
 // Pins read by the 6502
@@ -76,6 +103,10 @@ impl Outputs {
             rwb: true,
         }
     }
+    fn zero(&mut self) {
+        self.data = None;
+        self.rwb = true;
+    }
 }
 
 impl W6502 {
@@ -93,6 +124,8 @@ impl W6502 {
             sp: 0xfc,
             x: 0xbc,
             y: 0xca,
+
+            scratch1: 0,
         }
     }
 
@@ -108,19 +141,6 @@ impl W6502 {
     }
 
     pub fn tick(&mut self, inputs: &Inputs) -> Result<(), String> {
-        let posedge =!self.prev_clk && inputs.clk; 
-        let op = if posedge {
-            if self.queue.len() > 0 {
-                self.outputs.data = None;
-                self.queue.pop_front().unwrap()
-            } else {
-                UOp::Fetch
-            }
-        } else {
-            self.active_uop
-        };
-        self.active_uop = op;
-
         if !inputs.n_reset {
             // unspecified behavior for 6 cycles, then
             // read the reset vector, then set pc
@@ -133,17 +153,48 @@ impl W6502 {
             return Ok(());
         }
 
+        let posedge =!self.prev_clk && inputs.clk; 
+        // start a new uop each positive clock edge.
+        let op = if posedge {
+            if self.queue.len() > 0 {
+                self.queue.pop_front().unwrap()
+            } else {
+                // reset outputs
+                self.outputs.zero();
+                UOp::Fetch
+            }
+        } else {
+            self.active_uop
+        };
+        self.active_uop = op;
+
+        println!("uop={op:?} c={}", posedge as u8);
+
         // Execute uops.
         match op {
             UOp::Nop => {
                 // nop reads past the opcode while stalling.
                 self.set_addr(self.pc);
             },
+            UOp::Write{dst, val} => {
+                let dst = self.source(dst);
+                self.set_addr(dst);
+                let val = *self.mut_reg(val);
+                self.set_data(val);
+            },
             UOp::Fetch => {
                 if posedge {
                     self.set_addr(self.pc);
                 } else {
-                    self.decode_op(inputs.data);
+                    self.decode_op(inputs.data)?;
+                }
+            },
+            UOp::Read{src, reg} => {
+                if posedge {
+                    let val = self.source(src);
+                    self.set_addr(val);
+                } else {
+                    *self.mut_reg(reg) = inputs.data;
                 }
             },
             UOp::ResetRegs => {
@@ -177,20 +228,73 @@ impl W6502 {
     // After decoding, PC should point to the next instruction.
     fn decode_op(&mut self, opcode: u8) -> Result<(), String> {
         assert_eq!(0, self.queue.len());
+        let mut q = |op: UOp| { self.queue.push_back(op); };
+        // TODO: Much repetition across opcodes allows this to be refactored.
         match opcode {
             0x4C => {
                 // jmp abs
-                self.queue.push_back(UOp::ReadPC{first: true, addr: self.pc+1});
-                self.queue.push_back(UOp::ReadPC{first: false, addr: self.pc+2});
+                q(UOp::ReadPC{first: true, addr: self.pc+1});
+                q(UOp::ReadPC{first: false, addr: self.pc+2});
                 self.pc += 3;
             },
+            0x84 => {
+                // sty zpg
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Scratch1});
+                q(UOp::Write{dst: Source::RegVal(Register::Scratch1), val: Register::Y});
+                self.pc += 2;
+            },
+            0x85 => {
+                // sta zpg
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Scratch1});
+                q(UOp::Write{dst: Source::RegVal(Register::Scratch1), val: Register::Acc});
+                self.pc += 2;
+            },
+            0x86 => {
+                // stx zpg
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Scratch1});
+                q(UOp::Write{dst: Source::RegVal(Register::Scratch1), val: Register::X});
+                self.pc += 2;
+            },
+            0xA0 => {
+                // ldy imm
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Y});
+                self.pc += 2;
+            },
+            0xA2 => {
+                // ldx immediate
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::X});
+                self.pc += 2;
+            },
+            0xA4 => {
+                // ldy zpg
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Scratch1});
+                q(UOp::Read{src: Source::RegVal(Register::Scratch1), reg: Register::Y});
+                self.pc += 2;
+            },
+            0xA5 => {
+                // lda zero page
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Acc});
+                q(UOp::Read{src: Source::RegVal(Register::Acc), reg: Register::Acc});
+                self.pc += 2;
+            },
+            0xA6 => {
+                // ldx zero page
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::X});
+                q(UOp::Read{src: Source::RegVal(Register::X), reg: Register::X});
+                self.pc += 2;
+            },
+            0xA9 => {
+                // lda immediate
+                q(UOp::Read{src: Source::Address(self.pc+1), reg: Register::Acc});
+                self.pc += 2;
+            },
             0xEA => {
-                self.queue.push_back(UOp::Nop);
+                q(UOp::Nop);
                 // nop
                 self.pc += 1;
             },
             _ => {
-                return Err(format!("Unsupported opcode: {opcode:2X}"));
+                return Err(format!("Unsupported opcode: 0x{opcode:2X}"));
             },
         }
         Ok(())
@@ -201,6 +305,23 @@ impl W6502 {
     }
     fn set_data(&mut self, value: u8) {
         self.outputs.data = Some(value);
+        self.outputs.rwb = false;
+    }
+    fn mut_reg(&mut self, reg: Register) -> &mut u8{
+        match reg {
+            Register::Acc => &mut self.acc,
+            Register::X => &mut self.x,
+            Register::Y => &mut self.y,
+            Register::Scratch1 => &mut self.scratch1,
+        }
+    }
+
+    // Evaluate the source based on the current state of the cpu.
+    fn source(&mut self, src: Source) -> u16 {
+        match src {
+            Source::Address(v) => v,
+            Source::RegVal(reg) => *self.mut_reg(reg) as u16,
+        }
     }
 }
 

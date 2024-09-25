@@ -6,6 +6,7 @@
 ; zero page values
 db $CA $FE $DE $AD
 
+org $300
 .reset:
   ; LDA test
   lda #$AB     ; immediate

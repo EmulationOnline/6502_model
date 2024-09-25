@@ -72,6 +72,7 @@ fn parse_fields(input: &str) -> HashMap<String, u16> {
     result
 }
 
+// Return an error if the two values do not match.
 fn check_field(name: &str, want: u16, have: u16, line: usize) 
     -> Result<(), String> {
     if want != have {
@@ -81,6 +82,27 @@ fn check_field(name: &str, want: u16, have: u16, line: usize)
         Ok(())
     }
 }
+
+// Return an error if the two optional values do not match.
+// It is also an error if the model has a value and the log does not, or
+// vice versa.
+fn check_optional_field(name: &str, want: Option<u16>, have: Option<u16>, line: usize) 
+    -> Result<(), String> {
+    fn hexshow(v: Option<u16>) -> String {
+        match v {
+            None => format!("None"),
+            Some(v) => format!("0x{v:04X}"),
+        }
+    }
+    if want != have {
+        Err(format!(
+        "{name} mismatch on line {line}. Have={} Want={}", hexshow(have), hexshow(want)))
+    } else {
+        Ok(())
+    }
+}
+
+
 
 #[derive(PartialEq, Debug, Clone)]
 enum TraceFailure {
@@ -120,6 +142,7 @@ type TestResult = Result<(), TraceFailure>;
 fn run_trace_test(
     checker: &pki_util::trace::TraceChecker,
     log_path: &str, input_path: &str) -> TestResult {
+    println!("running trace: {log_path}");
     let log_data = std::fs::read_to_string(log_path)
         .or(Err("Failed to read log file."))?;
     let log_data = checker.verify_trace(&log_data)
@@ -162,13 +185,13 @@ fn assert_model_log(log: &str, environment: &[u8])
 
     for (num, line) in log.enumerate() {
         println!("log: {line}");
-        let num = num + 6;
+        let num = num + skipped_lines + 1;  // start counting from 1
         let fields = parse_fields(&line);
         cpu.cycle(&Inputs {
             data: environment[cpu.outputs().address as usize],
             clk: false, /*unused*/
             n_reset: true,
-        });
+        })?;
 
         // Every line should have a and rwb
         check_field("addr", fields["a"], cpu.outputs().address, num)?;
@@ -176,7 +199,8 @@ fn assert_model_log(log: &str, environment: &[u8])
 
 
         // d(ata) is optional
-        // check_field_option("data", fields["d"], cpu.outputs().d, fields["d"]);
+        check_optional_field("data", fields.get("d").copied(), 
+                             cpu.outputs().data.map(|v| v as u16), num)?;
 
     }
     Ok(())
@@ -214,7 +238,8 @@ mod trace_tests {
     }
 
     // Assert some function of the result for all tests in a directory.
-    fn assert_all_traces(directory: &str, expected_result: fn(TestResult)->bool) {
+    fn assert_all_traces(directory: &str, expected_count: usize, 
+                         expected_result: fn(TestResult)->bool) {
         let checker = checker();
         let mut count = 0;
         for entry in std::fs::read_dir(directory).unwrap() {
@@ -232,8 +257,7 @@ mod trace_tests {
                 "Failure for test: '{path}' : {result:?}");
         }
 
-        assert!(count > 0);
-        
+        assert_eq!(expected_count, count);
     }
 
 
@@ -247,29 +271,15 @@ mod trace_tests {
     }
 
     #[test]
-    fn test_valid_but_incorrect() {
-        let checker = checker();
-        let result = run_trace_test(
-                &checker, 
-                "failing_traces/load_store_regs_basic.log",
-                "failing_traces/load_store_regs_basic.bin");
-        assert!(result.is_err());
-        let result = result.err().unwrap();
-        assert_eq!(
-            false,
-            result.is_badsetup());
-    }
-
-    #[test]
     fn test_passing_traces() {
-        assert_all_traces("passing_traces/", |result| result.is_ok());
+        assert_all_traces("passing_traces/", 2, |result| result.is_ok());
     }
 
     #[test]
     fn test_failing_traces() {
         // Failing traces should be valid besides having an incorrect
         // result.
-        assert_all_traces("failing_traces/", |result| {
+        assert_all_traces("failing_traces/", 0, |result| {
             result.is_err() && !result.err().unwrap().is_badsetup()
         });
     }
