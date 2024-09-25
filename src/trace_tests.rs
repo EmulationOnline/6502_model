@@ -196,11 +196,13 @@ fn assert_model_log(log: &str, environment: &[u8])
         // Every line should have a and rwb
         check_field("addr", fields["a"], cpu.outputs().address, num)?;
         check_field("rwb", fields["rwb"], cpu.outputs().rwb as u16, num)?;
+        check_field("sync", fields["sync"], cpu.outputs().sync as u16, num)?;
 
 
         // d(ata) is optional
         check_optional_field("data", fields.get("d").copied(), 
                              cpu.outputs().data.map(|v| v as u16), num)?;
+
 
     }
     Ok(())

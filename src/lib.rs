@@ -93,6 +93,7 @@ struct Outputs {
     address: u16,
     data: Option<u8>,   // None if reading, Some if writing.
     rwb: bool,          // true for read, false for write
+    sync: bool,         // true for the cycle of fetching the opcode byte.
 }
 
 impl Outputs {
@@ -101,6 +102,7 @@ impl Outputs {
             address: 0xFFFF,
             data: None,
             rwb: true,
+            sync: false,
         }
     }
     fn zero(&mut self) {
@@ -157,10 +159,12 @@ impl W6502 {
         // start a new uop each positive clock edge.
         let op = if posedge {
             if self.queue.len() > 0 {
+                self.outputs.sync = false;
                 self.queue.pop_front().unwrap()
             } else {
                 // reset outputs
                 self.outputs.zero();
+                self.outputs.sync = true;
                 UOp::Fetch
             }
         } else {
